@@ -8,11 +8,15 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/mux"
 
 	"github.com/BurntSushi/toml"
 
@@ -28,9 +32,10 @@ type targetState struct {
 }
 
 type clientAuth struct {
-	ExchangeKey string
-	AuthKey     string
-	SignKey     string
+	ExchangeKey  string
+	AuthKey      string
+	SignKey      string
+	IsAuthorized bool
 }
 
 type clientState struct {
@@ -38,8 +43,9 @@ type clientState struct {
 }
 
 type serverState struct {
-	ClientsMutex sync.RWMutex
-	Clients      map[string]*clientState
+	Mutex   sync.RWMutex
+	Clients map[string]*clientState
+	AuthMap map[string]*clientAuth // map from exchange keys to their correspoding clientAuth instances
 }
 
 type responseBody struct {
@@ -105,11 +111,36 @@ func main() {
 		Collector: colly.NewCollector(),
 	}
 
+	server := serverState{
+		Clients: make(map[string]*clientState),
+		AuthMap: make(map[string]*clientAuth),
+	}
+
 	target.Collector.OnResponse(func(response *colly.Response) {
 		if response.Request.URL.Path == "/ucp.php" && response.Request.URL.Query().Get("mode") == "login" {
 			switch response.StatusCode {
 			case http.StatusOK:
 				log.Printf("successfully logged into %s\n", response.Request.URL.Host)
+
+				exchangeKey := response.Ctx.Get("exchange_key")
+				if exchangeKey == "" {
+					log.Printf("failed to log into %s: no exchange key was provided by the client\n", response.Request.URL.Host)
+					return
+				}
+
+				remoteAddr := response.Ctx.Get("remote_addr")
+				if remoteAddr == "" {
+					log.Printf("failed to log into %s: could not identify the remote address of the client\n", response.Request.URL.Host)
+					return
+				}
+
+				server.Mutex.Lock()
+				auth := server.AuthMap[exchangeKey]
+				auth.IsAuthorized = true
+				server.Clients[remoteAddr] = &clientState{
+					Auth: auth,
+				}
+				server.Mutex.Unlock()
 
 			default:
 				log.Printf("failed to log into %s: target responded with HTTP status code %d\n", response.Request.URL.Host, response.StatusCode)
@@ -117,28 +148,26 @@ func main() {
 		}
 	})
 
-	server := serverState{
-		Clients: make(map[string]*clientState),
-	}
+	router := mux.NewRouter()
 
-	http.HandleFunc("/auth/generate_keys", func(writer http.ResponseWriter, request *http.Request) {
+	router.HandleFunc("/auth/generate_keys", func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("authorization request initiated by %s\n", request.RemoteAddr)
 		log.Printf("generating authentication key triple for %s...\n", request.RemoteAddr)
 
-		client := clientState{
-			Auth: &clientAuth{
-				ExchangeKey: generateDefaultUniqueID(),
-				AuthKey:     generateDefaultUniqueID(),
-				SignKey:     generateDefaultUniqueID(),
-			},
+		auth := &clientAuth{
+			ExchangeKey: generateDefaultUniqueID(),
+			AuthKey:     generateDefaultUniqueID(),
+			SignKey:     generateDefaultUniqueID(),
 		}
 
-		server.ClientsMutex.Lock()
-		server.Clients[request.RemoteAddr] = &client
-		server.ClientsMutex.Unlock()
+		server.Mutex.Lock()
+		server.AuthMap[auth.ExchangeKey] = auth
+		server.Mutex.Unlock()
+
+		log.Printf("authentication key triple generated successfully for %s\n", request.RemoteAddr)
 
 		data := map[string]string{
-			"exchange_key": client.Auth.ExchangeKey,
+			"exchange_key": auth.ExchangeKey,
 		}
 		response := responseBody{
 			Status: 200,
@@ -155,10 +184,20 @@ func main() {
 			log.Printf("authorization request by %s failed: could not send serialized response data: %s\n", request.RemoteAddr, err.Error())
 			return
 		}
+
+		log.Printf("exchange key delivered successfully to %s\n", request.RemoteAddr)
 	})
 
-	http.HandleFunc("/x/auth/login", func(writer http.ResponseWriter, request *http.Request) {
-		log.Println("login request arrived from", request.RemoteAddr)
+	router.HandleFunc("/auth/authorize/{exchange_key}", func(writer http.ResponseWriter, request *http.Request) {
+		log.Printf("attempting to authorize exchange key provided by %s...\n", request.RemoteAddr)
+
+		exchangeKey, ok := mux.Vars(request)["exchange_key"]
+		if !ok {
+			log.Printf("authorization of exchange key provided by %s failed: no exchange key was actually provided\n", request.RemoteAddr)
+			return
+		}
+
+		log.Println("initiating login request for", request.RemoteAddr)
 
 		request.ParseForm()
 
@@ -187,16 +226,26 @@ func main() {
 		username := usernames[0]
 		password := passwords[0]
 
-		err := target.Collector.Post(config.BaseURL+"/ucp.php?mode=login", map[string]string{
-			"username": username,
-			"password": password,
-			"login":    "Влез",
-		})
+		params := url.Values{
+			"username": []string{username},
+			"password": []string{password},
+			"login":    []string{"Влез"},
+		}
+		encodedParams := params.Encode()
+		encodedParamsReader := strings.NewReader(encodedParams)
+		context := colly.NewContext()
+		context.Put("exchange_key", exchangeKey)
+		context.Put("remote_addr", request.RemoteAddr)
+		err := target.Collector.Request(http.MethodPost, config.BaseURL+"/ucp.php?mode=login", encodedParamsReader, context, nil)
 		if err != nil {
 			log.Printf("login request from %s to target %s failed: could not authenticate to target: failed to initiate POST request: %s\n", request.RemoteAddr, configName, err.Error())
 			return
 		}
+
+		writer.Write([]byte(fmt.Sprintf("attempting to authorize exchange key %s provided by %s by logging into the target...\n", exchangeKey, request.RemoteAddr)))
 	})
+
+	http.Handle("/", router)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
