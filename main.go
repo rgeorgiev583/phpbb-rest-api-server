@@ -124,7 +124,7 @@ func main() {
 
 				exchangeKey := response.Ctx.Get("exchange_key")
 				if exchangeKey == "" {
-					log.Printf("failed to log into %s: no exchange key was provided by the client\n", response.Request.URL.Host)
+					log.Printf("failed to authorize %s: no exchange key was provided by the client\n", response.Request.URL.Host)
 					return
 				}
 
@@ -135,7 +135,11 @@ func main() {
 				}
 
 				server.Mutex.Lock()
-				auth := server.AuthMap[exchangeKey]
+				auth, ok := server.AuthMap[exchangeKey]
+				if !ok {
+					log.Printf("authorization of exchange key provided by %s failed: exchange key not found in keymap\n", remoteAddr)
+					return
+				}
 				auth.IsAuthorized = true
 				server.Clients[remoteAddr] = &clientState{
 					Auth: auth,
@@ -243,6 +247,50 @@ func main() {
 		}
 
 		writer.Write([]byte(fmt.Sprintf("attempting to authorize exchange key %s provided by %s by logging into the target...\n", exchangeKey, request.RemoteAddr)))
+	})
+
+	router.HandleFunc("/auth/exchange_key/{exchange_key}", func(writer http.ResponseWriter, request *http.Request) {
+		log.Printf("trying to fetch the authorization and signing key corresponding to the exchange key provided by %s...\n", request.RemoteAddr)
+
+		exchangeKey, ok := mux.Vars(request)["exchange_key"]
+		if !ok {
+			log.Printf("authorization of exchange key provided by %s failed: no exchange key was actually provided\n", request.RemoteAddr)
+			return
+		}
+
+		server.Mutex.RLock()
+		auth, ok := server.AuthMap[exchangeKey]
+		if !ok {
+			log.Printf("retrieval of authorization/signing key pair corresponding to the exchange key provided by %s failed: exchange key not found in keymap\n", request.RemoteAddr)
+			return
+		}
+		if !auth.IsAuthorized {
+			log.Printf("retrieval of authorization/signing key pair corresponding to the exchange key provided by %s failed: exchange key was not authorized\n", request.RemoteAddr)
+			return
+		}
+		server.Mutex.RUnlock()
+
+		data := map[string]string{
+			"auth_key": auth.AuthKey,
+			"sign_key": auth.SignKey,
+		}
+		response := responseBody{
+			Status: 200,
+			Data:   data,
+		}
+		responseText, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("retrieval of authorization/signing key pair corresponding to the exchange key provided by %s failed: could not serialize response data to JSON: %s\n", request.RemoteAddr, err.Error())
+			return
+		}
+
+		_, err = writer.Write(responseText)
+		if err != nil {
+			log.Printf("retrieval of authorization/signing key pair corresponding to the exchange key provided by %s failed: could not send serialized response data: %s\n", request.RemoteAddr, err.Error())
+			return
+		}
+
+		log.Printf("authorization of exchange key %s complete\n", request.RemoteAddr)
 	})
 
 	http.Handle("/", router)
