@@ -44,8 +44,8 @@ type clientState struct {
 
 type serverState struct {
 	Mutex   sync.RWMutex
-	Clients map[string]*clientState
-	AuthMap map[string]*clientAuth // map from exchange keys to their correspoding clientAuth instances
+	Clients map[string]*clientState // map from auth keys to their correspoding clientState instances
+	AuthMap map[string]*clientAuth  // map from exchange keys to their correspoding clientAuth instances
 }
 
 type responseBody struct {
@@ -141,7 +141,7 @@ func main() {
 					return
 				}
 				auth.IsAuthorized = true
-				server.Clients[remoteAddr] = &clientState{
+				server.Clients[auth.AuthKey] = &clientState{
 					Auth: auth,
 				}
 				server.Mutex.Unlock()
