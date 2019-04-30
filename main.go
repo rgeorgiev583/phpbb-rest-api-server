@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -11,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +40,7 @@ type clientAuth struct {
 	AuthKey      string
 	SignKey      string
 	IsAuthorized bool
+	Serial       uint
 }
 
 type clientState struct {
@@ -82,6 +87,93 @@ func generateUniqueID(extra string) string {
 
 func generateDefaultUniqueID() string {
 	return generateUniqueID("c")
+}
+
+func authenticate(server *serverState, writer http.ResponseWriter, request *http.Request) (ok bool, err error) {
+	authKeys, ok := request.Form["auth_key"]
+	if !ok || len(authKeys) < 1 {
+		log.Printf("authentication request from %s failed: no auth key provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("no auth key provided")
+	} else if len(authKeys) > 1 {
+		log.Printf("authentication request from %s failed: too many auth keys provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("too many auth keys provided")
+	}
+
+	serials, ok := request.Form["serial"]
+	if !ok || len(serials) < 1 {
+		log.Printf("login request from %s failed: no serial provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("no serial provided")
+	} else if len(serials) > 1 {
+		log.Printf("login request from %s failed: too many serials provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("too many serials provided")
+	}
+
+	hashes, ok := request.Form["hash"]
+	if !ok || len(hashes) < 1 {
+		log.Printf("authentication request from %s failed: no hash provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("no hash provided")
+	} else if len(hashes) > 1 {
+		log.Printf("authentication request from %s failed: too many hashes provided\n", request.RemoteAddr)
+		writer.WriteHeader(http.StatusBadRequest)
+		return false, fmt.Errorf("too many hashes provided")
+	}
+
+	authKey := authKeys[0]
+	serial := serials[0]
+	hash := hashes[0]
+	hashBinary, err := hex.DecodeString(hash)
+	if err != nil {
+		log.Printf("authentication request from %s failed: could not decode hash signature\n", request.RemoteAddr)
+		return false, err
+	}
+
+	server.Mutex.Lock()
+
+	clientAuth := server.Clients[authKey].Auth
+	if !clientAuth.IsAuthorized {
+		log.Printf("authentication request from %s failed: client with the provided auth key is not authorized\n", request.RemoteAddr)
+		return false, fmt.Errorf("client with the provided auth key is not authorized")
+	}
+
+	requestString := request.URL.Path + "auth_key=" + authKey
+	signKey := clientAuth.SignKey
+	signKeyBinary, err := hex.DecodeString(signKey)
+	if err != nil {
+		log.Printf("authentication request from %s failed: could not decode signing key\n", request.RemoteAddr)
+		return false, err
+	}
+
+	signer := hmac.New(sha256.New, signKeyBinary)
+	signer.Write([]byte(requestString))
+	validHashBinary := signer.Sum(nil)
+
+	if string(hashBinary) != string(validHashBinary) {
+		log.Printf("authentication request from %s failed: invalid hash signature\n", request.RemoteAddr)
+		return false, fmt.Errorf("invalid hash signature")
+	}
+
+	serialNumber, err := strconv.ParseUint(serial, 10, 0)
+	if err != nil {
+		log.Printf("authentication request from %s failed: could not decode serial number\n", request.RemoteAddr)
+		return false, err
+	}
+	serialNumberUint := uint(serialNumber)
+
+	if serialNumberUint <= clientAuth.Serial {
+		log.Printf("authentication request from %s failed: invalid serial\n", request.RemoteAddr)
+		return false, fmt.Errorf("invalid serial")
+	}
+
+	clientAuth.Serial = serialNumberUint
+
+	server.Mutex.Unlock()
+
+	return true, nil
 }
 
 func main() {
@@ -291,6 +383,51 @@ func main() {
 		}
 
 		log.Printf("authorization of exchange key %s complete\n", request.RemoteAddr)
+	})
+
+	router.HandleFunc("/auth/verify", func(writer http.ResponseWriter, request *http.Request) {
+		var response responseBody
+
+		isAuthenticated, err := authenticate(&server, writer, request)
+		if err != nil {
+			data := map[string]interface{}{
+				"valid": false,
+				"error": err.Error(),
+			}
+			response = responseBody{
+				Status: 401,
+				Data:   data,
+			}
+		} else if !isAuthenticated {
+			data := map[string]interface{}{
+				"valid":    true,
+				"usertype": "member",
+			}
+			response = responseBody{
+				Status: 200,
+				Data:   data,
+			}
+		} else {
+			data := map[string]interface{}{
+				"valid": false,
+			}
+			response = responseBody{
+				Status: 200,
+				Data:   data,
+			}
+		}
+
+		responseText, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("authentication request from %s failed: could not serialize response data to JSON: %s\n", request.RemoteAddr, err.Error())
+			return
+		}
+
+		_, err = writer.Write(responseText)
+		if err != nil {
+			log.Printf("authentication request from %s failed: could not send serialized response data: %s\n", request.RemoteAddr, err.Error())
+			return
+		}
 	})
 
 	http.Handle("/", router)
