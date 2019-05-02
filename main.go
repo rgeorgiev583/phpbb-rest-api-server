@@ -35,6 +35,7 @@ type clientState struct {
 type serverState struct {
 	Mutex   sync.RWMutex
 	Clients map[string]*clientState // map from the username of the client to its correspoding clientState instance
+	AuthMap map[string]*clientState // map from the access token for the client to its correspoding clientState instance
 }
 
 func newClient(server *serverState) (client *clientState, err error) {
@@ -112,19 +113,6 @@ func main() {
 			return
 		}
 
-		func() {
-			server.Mutex.Lock()
-			defer server.Mutex.Unlock()
-
-			_, isAlreadyLoggedIn := server.Clients[username]
-			if isAlreadyLoggedIn {
-				log.Printf("failed to log into `%s` from %s: client with username `%s` is already logged in\n", configName, request.RemoteAddr, username)
-				return
-			}
-
-			server.Clients[username] = client
-		}()
-
 		params := url.Values{
 			"username": usernames,
 			"password": passwords,
@@ -153,6 +141,20 @@ func main() {
 
 			hexToken := hex.EncodeToString(token)
 			response["access_token"] = hexToken
+
+			func() {
+				server.Mutex.Lock()
+				defer server.Mutex.Unlock()
+
+				_, isAlreadyLoggedIn := server.Clients[username]
+				if isAlreadyLoggedIn {
+					log.Printf("failed to log into `%s` from %s: client with username `%s` is already logged in\n", configName, request.RemoteAddr, username)
+					return
+				}
+
+				server.Clients[username] = client
+				server.AuthMap[hexToken] = client
+			}()
 		} else {
 			log.Printf("failed to log into %s from %s with username `%s`: server responded with HTTP status code %d\n", configName, request.RemoteAddr, username, serverResponse.StatusCode)
 			response["success"] = false
