@@ -8,17 +8,15 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path"
-	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
 
 	"github.com/BurntSushi/toml"
-
-	"github.com/gocolly/colly"
 )
 
 type serverConfig struct {
@@ -26,7 +24,7 @@ type serverConfig struct {
 }
 
 type clientState struct {
-	Collector *colly.Collector
+	http.Client
 }
 
 type serverState struct {
@@ -34,29 +32,16 @@ type serverState struct {
 	Clients map[string]*clientState // map from the username of the client to its correspoding clientState instance
 }
 
-func newCollector(server *serverState) *colly.Collector {
-	collector := colly.NewCollector()
-	collector.OnResponse(func(response *colly.Response) {
-		if response.Request.URL.Path == "/ucp.php" && response.Request.URL.Query().Get("mode") == "login" {
-			serverName := response.Ctx.Get("server_name")
-			remoteAddr := response.Ctx.Get("remote_addr")
-			username := response.Ctx.Get("username")
-			if serverName == "" || remoteAddr == "" || username == "" {
-				panic(fmt.Sprintln("fatal: no server name or remote address or username specified in login request context"))
-			}
+func newClient(server *serverState) (client *clientState, err error) {
+	cookieJar, err := cookiejar.New(nil)
+	if err != nil {
+		return
+	}
 
-			switch response.StatusCode {
-			case http.StatusOK:
-				log.Printf("successfully logged into `%s` from %s with username `%s`\n", serverName, remoteAddr, username)
-				response.Ctx.Put("success", true)
-
-			default:
-				log.Printf("failed to log into %s from %s with username `%s`: server responded with HTTP status code %d\n", serverName, remoteAddr, username, response.StatusCode)
-				response.Ctx.Put("success", false)
-			}
-		}
-	})
-	return collector
+	client = &clientState{
+		Client: http.Client{Jar: cookieJar},
+	}
+	return
 }
 
 func main() {
@@ -116,7 +101,11 @@ func main() {
 		}
 
 		username := usernames[0]
-		collector := newCollector(server)
+		client, err := newClient(server)
+		if err != nil {
+			log.Printf("failed to log into `%s` from %s with username `%s`: could not initialize HTTP client: %s\n", configName, request.RemoteAddr, username, err.Error())
+			return
+		}
 
 		func() {
 			server.Mutex.Lock()
@@ -128,9 +117,7 @@ func main() {
 				return
 			}
 
-			server.Clients[username] = &clientState{
-				Collector: collector,
-			}
+			server.Clients[username] = client
 		}()
 
 		params := url.Values{
@@ -138,26 +125,17 @@ func main() {
 			"password": passwords,
 			"login":    []string{"Влез"},
 		}
-		encodedParams := params.Encode()
-		encodedParamsReader := strings.NewReader(encodedParams)
-		context := colly.NewContext()
-		context.Put("server_name", configName)
-		context.Put("remote_addr", request.RemoteAddr)
-		context.Put("username", username)
-		err := collector.Request(http.MethodPost, config.BaseURL+"/ucp.php?mode=login", encodedParamsReader, context, nil)
+		serverResponse, err := client.PostForm(config.BaseURL+"/ucp.php?mode=login", params)
 		if err != nil {
 			log.Printf("failed to log into `%s` from %s with username `%s`: could not initiate POST request: %s\n", configName, request.RemoteAddr, username, err.Error())
 			return
 		}
 
-		response := make(map[string]interface{})
+		writer.WriteHeader(serverResponse.StatusCode)
 
-		ok = context.GetAny("success").(bool)
-		if !ok {
-			writer.WriteHeader(http.StatusForbidden)
-			response["success"] = false
-		} else {
-			writer.WriteHeader(http.StatusOK)
+		response := make(map[string]interface{})
+		if serverResponse.StatusCode == http.StatusOK {
+			log.Printf("successfully logged into `%s` from %s with username `%s`\n", configName, request.RemoteAddr, username)
 			response["success"] = true
 
 			token := make([]byte, 16)
@@ -169,6 +147,9 @@ func main() {
 
 			hexToken := hex.EncodeToString(token)
 			response["access_token"] = hexToken
+		} else {
+			log.Printf("failed to log into %s from %s with username `%s`: server responded with HTTP status code %d\n", configName, request.RemoteAddr, username, serverResponse.StatusCode)
+			response["success"] = false
 		}
 
 		responseText, err := json.Marshal(response)
