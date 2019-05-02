@@ -14,7 +14,12 @@ import (
 	"path"
 	"sync"
 
+	"golang.org/x/net/html/atom"
+
+	"golang.org/x/net/html"
+
 	"github.com/gorilla/mux"
+	"github.com/yhat/scrape"
 
 	"github.com/BurntSushi/toml"
 )
@@ -151,6 +156,35 @@ func main() {
 		} else {
 			log.Printf("failed to log into %s from %s with username `%s`: server responded with HTTP status code %d\n", configName, request.RemoteAddr, username, serverResponse.StatusCode)
 			response["success"] = false
+
+			func() {
+				document, err := html.Parse(serverResponse.Body)
+				if err != nil {
+					log.Printf("warning: could not parse HTML page for failed login\n")
+					return
+				}
+
+				errNode, ok := scrape.Find(document, func(node *html.Node) bool {
+					for _, attr := range node.Attr {
+						if atom.Lookup([]byte(attr.Key)) == atom.Class && attr.Val == "error" {
+							return true
+						}
+					}
+
+					return false
+				})
+				if !ok {
+					log.Printf("warning: could not find error text in HTML page for failed login\n")
+					return
+				}
+
+				errText := errNode.FirstChild
+				if errText == nil || errText.Type != html.TextNode {
+					log.Printf("warning: could not find text node for error text in HTML page for failed login\n")
+				}
+
+				response["error"] = errText.Data
+			}()
 		}
 
 		responseText, err := json.Marshal(response)
