@@ -130,6 +130,7 @@ func main() {
 			log.Printf("failed to log into `%s` from %s with username `%s`: could not initiate POST request: %s\n", configName, request.RemoteAddr, username, err.Error())
 			return
 		}
+		defer serverResponse.Body.Close()
 
 		writer.WriteHeader(serverResponse.StatusCode)
 
