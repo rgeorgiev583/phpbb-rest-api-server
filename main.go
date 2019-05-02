@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -147,11 +150,37 @@ func main() {
 			return
 		}
 
+		response := make(map[string]interface{})
+
 		ok = context.GetAny("success").(bool)
-		if ok {
-			writer.WriteHeader(http.StatusOK)
-		} else {
+		if !ok {
 			writer.WriteHeader(http.StatusForbidden)
+			response["success"] = false
+		} else {
+			writer.WriteHeader(http.StatusOK)
+			response["success"] = true
+
+			token := make([]byte, 16)
+			_, err = rand.Read(token)
+			if err != nil {
+				log.Printf("failed to log into `%s` from %s with username `%s`: could not generate API access token: %s\n", configName, request.RemoteAddr, username, err.Error())
+				return
+			}
+
+			hexToken := hex.EncodeToString(token)
+			response["access_token"] = hexToken
+		}
+
+		responseText, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("failed to log into `%s` from %s with username `%s`: could not serialize response data to JSON: %s\n", configName, request.RemoteAddr, username, err.Error())
+			return
+		}
+
+		_, err = writer.Write(responseText)
+		if err != nil {
+			log.Printf("failed to log into `%s` from %s with username `%s`: could not send serialized HTTP response data: %s\n", configName, request.RemoteAddr, username, err.Error())
+			return
 		}
 	})
 
