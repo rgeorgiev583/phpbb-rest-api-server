@@ -14,14 +14,11 @@ import (
 	"path"
 	"sync"
 
-	"golang.org/x/net/html/atom"
-
 	"golang.org/x/net/html"
 
+	"github.com/BurntSushi/toml"
 	"github.com/gorilla/mux"
 	"github.com/yhat/scrape"
-
-	"github.com/BurntSushi/toml"
 )
 
 type serverConfig struct {
@@ -74,7 +71,7 @@ func main() {
 	}
 
 	server := &serverState{
-		Clients: make(map[string]*clientState),
+		Clients: map[string]*clientState{},
 	}
 
 	router := mux.NewRouter()
@@ -127,7 +124,7 @@ func main() {
 
 		writer.WriteHeader(serverResponse.StatusCode)
 
-		response := make(map[string]interface{})
+		response := map[string]interface{}{}
 		if serverResponse.StatusCode == http.StatusOK {
 			log.Printf("successfully logged into `%s` from %s with username `%s`\n", configName, request.RemoteAddr, username)
 			response["success"] = true
@@ -166,15 +163,7 @@ func main() {
 					return
 				}
 
-				errNode, ok := scrape.Find(document, func(node *html.Node) bool {
-					for _, attr := range node.Attr {
-						if atom.Lookup([]byte(attr.Key)) == atom.Class && attr.Val == "error" {
-							return true
-						}
-					}
-
-					return false
-				})
+				errNode, ok := scrape.Find(document, scrape.ByClass("error"))
 				if !ok {
 					log.Printf("warning: could not find error text in HTML page for failed login\n")
 					return
