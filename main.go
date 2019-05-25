@@ -72,6 +72,7 @@ func main() {
 
 	server := &serverState{
 		Clients: map[string]*clientState{},
+		AuthMap: map[string]*clientState{},
 	}
 
 	router := mux.NewRouter()
