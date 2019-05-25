@@ -122,6 +122,7 @@ func main() {
 		}
 		defer serverResponse.Body.Close()
 
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 		writer.WriteHeader(serverResponse.StatusCode)
 
 		response := map[string]interface{}{}
