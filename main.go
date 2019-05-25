@@ -81,40 +81,30 @@ func main() {
 
 		request.ParseForm()
 
-		usernames, ok := request.Form["username"]
-		if !ok || len(usernames) < 1 {
+		username := request.Form.Get("username")
+		if username == "" {
 			log.Printf("failed to log into `%s` from %s: no username provided\n", configName, request.RemoteAddr)
 			writer.WriteHeader(http.StatusBadRequest)
 			return
-		} else if len(usernames) > 1 {
-			log.Printf("failed to log into `%s` from %s: too many usernames provided\n", configName, request.RemoteAddr)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
 		}
 
-		passwords, ok := request.Form["password"]
-		if !ok || len(passwords) < 1 {
+		password := request.Form.Get("password")
+		if password == "" {
 			log.Printf("failed to log into `%s` from %s: no password provided\n", configName, request.RemoteAddr)
 			writer.WriteHeader(http.StatusBadRequest)
 			return
-		} else if len(passwords) > 1 {
-			log.Printf("failed to log into `%s` from %s: too many passwords provided\n", configName, request.RemoteAddr)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
 		}
 
-		username := usernames[0]
 		client, err := newClient(server)
 		if err != nil {
 			log.Printf("failed to log into `%s` from %s with username `%s`: could not initialize HTTP client: %s\n", configName, request.RemoteAddr, username, err.Error())
 			return
 		}
 
-		params := url.Values{
-			"username": usernames,
-			"password": passwords,
-			"login":    []string{"Влез"},
-		}
+		params := url.Values{}
+		params.Set("username", username)
+		params.Set("password", password)
+		params.Set("login", "Влез")
 		serverResponse, err := client.PostForm(config.BaseURL+"/ucp.php?mode=login", params)
 		if err != nil {
 			log.Printf("failed to log into `%s` from %s with username `%s`: could not initiate POST request: %s\n", configName, request.RemoteAddr, username, err.Error())
