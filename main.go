@@ -35,7 +35,7 @@ type serverState struct {
 	AuthMap map[string]*clientState // map from the access token for the client to its correspoding clientState instance
 }
 
-func newClient(server *serverState) (client *clientState, err error) {
+func newClient() (client *clientState, err error) {
 	cookieJar, err := cookiejar.New(nil)
 	if err != nil {
 		return
@@ -96,7 +96,7 @@ func main() {
 			return
 		}
 
-		client, err := newClient(server)
+		client, err := newClient()
 		if err != nil {
 			log.Printf("failed to log into `%s` from %s with username `%s`: could not initialize HTTP client: %s\n", configName, request.RemoteAddr, username, err.Error())
 			return
