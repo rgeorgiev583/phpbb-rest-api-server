@@ -49,8 +49,8 @@ func newClient(server *serverState) (client *clientState, err error) {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "error: no valid targets provided")
-		fmt.Fprintf(os.Stderr, "usage: %s TARGET...", os.Args[0])
+		fmt.Fprintln(os.Stderr, "error: no valid target provided")
+		fmt.Fprintf(os.Stderr, "usage: %s TARGET", os.Args[0])
 		return
 	}
 
